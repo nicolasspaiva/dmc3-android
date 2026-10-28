@@ -1,0 +1,263 @@
+000ff000: 27bdffa0    addiu sp, sp, -0x60
+000ff004: ffbf0000    sd    ra, 0(sp)
+000ff008: 7fb00010    sq    s0, 0x10(sp)
+000ff00c: 7fb10020    sq    s1, 0x20(sp)
+000ff010: 7fb20030    sq    s2, 0x30(sp)
+000ff014: 7fb30040    sq    s3, 0x40(sp)
+000ff018: 0c07b7c8    jal   0x1edf20
+000ff01c: 00000000    nop
+000ff020: 3c1201d1    lui   s2, 0x01d1
+000ff024: 8e52d70c    lw    s2, -0x28f4(s2)
+000ff028: 124000f3    beq   s2, zero, done
+000ff02c: 00000000    nop
+000ff030: 8e490024    lw    t1, 0x24(s2)
+000ff034: 112000f0    beq   t1, zero, done
+000ff038: 00000000    nop
+000ff03c: 91290018    lbu   t1, 0x18(t1)
+000ff040: 240a0001    addiu t2, zero, 1
+000ff044: 152a00ec    bne   t1, t2, done
+000ff048: 00000000    nop
+000ff04c: 8e50000c    lw    s0, 0xc(s2)
+000ff050: 120000e9    beq   s0, zero, done
+000ff054: 00000000    nop
+000ff058: 8e090000    lw    t1, 0(s0)
+000ff05c: 3c0a0060    lui   t2, 0x0060
+000ff060: 354a2650    ori   t2, t2, 0x2650
+000ff064: 152a00e4    bne   t1, t2, done
+000ff068: 00000000    nop
+000ff06c: 3c090010    lui   t1, 0x0010
+000ff070: 8d29f7e8    lw    t1, -2072(t1)
+000ff074: 11200048    beq   t1, zero, after_packs
+000ff078: 00000000    nop
+000ff07c: 3c090010    lui   t1, 0x0010
+000ff080: 8d29f7e0    lw    t1, -2080(t1)
+000ff084: 15200044    bne   t1, zero, after_packs
+000ff088: 00000000    nop
+000ff08c: 92090046    lbu   t1, 0x46(s0)
+000ff090: 00095140    sll   t2, t1, 5
+000ff094: 00094840    sll   t1, t1, 1
+000ff098: 012a8821    addu  s1, t1, t2
+000ff09c: afa00050    sw    zero, 0x50(sp)
+000ff0a0: 92093c6c    lbu   t1, 0x3c6c(s0)
+000ff0a4: 2d2a0002    sltiu t2, t1, 2
+000ff0a8: 11400024    beq   t2, zero, single_pack
+000ff0ac: 24130000    addiu s3, zero, 0
+000ff0b0: 11200002    beq   t1, zero, slot_loop
+000ff0b4: 00000000    nop
+000ff0b8: 24130002    addiu s3, zero, 2
+000ff0bc: 02134821    addu  t1, s0, s3
+000ff0c0: 91293d4f    lbu   t1, 0x3d4f(t1)
+000ff0c4: 240a00ff    addiu t2, zero, 0xff
+000ff0c8: 112a0011    beq   t1, t2, slot_next
+000ff0cc: 00000000    nop
+000ff0d0: 2529000d    addiu t1, t1, 0xd
+000ff0d4: afa90054    sw    t1, 0x54(sp)
+000ff0d8: 3c04006c    lui   a0, 0x006c
+000ff0dc: 34843810    ori   a0, a0, 0x3810
+000ff0e0: 24050001    addiu a1, zero, 1
+000ff0e4: 0c06bbf0    jal   0x1aefc0
+000ff0e8: 02293021    addu  a2, s1, t1
+000ff0ec: 8fa90054    lw    t1, 0x54(sp)
+000ff0f0: 00094880    sll   t1, t1, 2
+000ff0f4: 02094821    addu  t1, s0, t1
+000ff0f8: ad22243c    sw    v0, 0x243c(t1)
+000ff0fc: 14400004    bne   v0, zero, slot_next
+000ff100: 00000000    nop
+000ff104: 8fa90050    lw    t1, 0x50(sp)
+000ff108: 25290001    addiu t1, t1, 1
+000ff10c: afa90050    sw    t1, 0x50(sp)
+000ff110: 26730001    addiu s3, s3, 1
+000ff114: 92093c6c    lbu   t1, 0x3c6c(s0)
+000ff118: 11200003    beq   t1, zero, sm_end
+000ff11c: 2e6a0005    sltiu t2, s3, 5
+000ff120: 10000002    beq   zero, zero, slot_cond
+000ff124: 00000000    nop
+000ff128: 2e6a0002    sltiu t2, s3, 2
+000ff12c: 1540ffe3    bne   t2, zero, slot_loop
+000ff130: 00000000    nop
+000ff134: 10000013    beq   zero, zero, fill_done
+000ff138: 00000000    nop
+000ff13c: 2d2a0006    sltiu t2, t1, 6
+000ff140: 11400010    beq   t2, zero, fill_done
+000ff144: 25290015    addiu t1, t1, 0x15
+000ff148: afa90054    sw    t1, 0x54(sp)
+000ff14c: 3c04006c    lui   a0, 0x006c
+000ff150: 34843810    ori   a0, a0, 0x3810
+000ff154: 24050001    addiu a1, zero, 1
+000ff158: 0c06bbf0    jal   0x1aefc0
+000ff15c: 02293021    addu  a2, s1, t1
+000ff160: 8fa90054    lw    t1, 0x54(sp)
+000ff164: 00094880    sll   t1, t1, 2
+000ff168: 02094821    addu  t1, s0, t1
+000ff16c: ad22243c    sw    v0, 0x243c(t1)
+000ff170: 14400004    bne   v0, zero, fill_done
+000ff174: 00000000    nop
+000ff178: 8fa90050    lw    t1, 0x50(sp)
+000ff17c: 25290001    addiu t1, t1, 1
+000ff180: afa90050    sw    t1, 0x50(sp)
+000ff184: 8fa90050    lw    t1, 0x50(sp)
+000ff188: 15200003    bne   t1, zero, after_packs
+000ff18c: 00000000    nop
+000ff190: 3c090010    lui   t1, 0x0010
+000ff194: ad20f7e8    sw    zero, -2072(t1)
+000ff198: 3c19006c    lui   t9, 0x006c
+000ff19c: 972b3744    lhu   t3, 0x3744(t9)
+000ff1a0: 97293740    lhu   t1, 0x3740(t9)
+000ff1a4: 31290fff    andi  t1, t1, 0x0fff
+000ff1a8: a7293740    sh    t1, 0x3740(t9)
+000ff1ac: 31690fff    andi  t1, t3, 0x0fff
+000ff1b0: a7293744    sh    t1, 0x3744(t9)
+000ff1b4: 97293746    lhu   t1, 0x3746(t9)
+000ff1b8: 31290fff    andi  t1, t1, 0x0fff
+000ff1bc: a7293746    sh    t1, 0x3746(t9)
+000ff1c0: 31691000    andi  t1, t3, 0x1000
+000ff1c4: 15200009    bne   t1, zero, up
+000ff1c8: 31692000    andi  t1, t3, 0x2000
+000ff1cc: 15200009    bne   t1, zero, right
+000ff1d0: 31698000    andi  t1, t3, 0x8000
+000ff1d4: 15200009    bne   t1, zero, left
+000ff1d8: 31694000    andi  t1, t3, 0x4000
+000ff1dc: 15200009    bne   t1, zero, down
+000ff1e0: 00000000    nop
+000ff1e4: 10000084    beq   zero, zero, done
+000ff1e8: 00000000    nop
+000ff1ec: 10000006    beq   zero, zero, set
+000ff1f0: 240c0002    addiu t4, zero, 2
+000ff1f4: 10000004    beq   zero, zero, set
+000ff1f8: 240c0000    addiu t4, zero, 0
+000ff1fc: 10000002    beq   zero, zero, set
+000ff200: 240c0001    addiu t4, zero, 1
+000ff204: 240c0003    addiu t4, zero, 3
+000ff208: 920d3c6c    lbu   t5, 0x3c6c(s0)
+000ff20c: 11ac007a    beq   t5, t4, done
+000ff210: 00000000    nop
+000ff214: 92093c6e    lbu   t1, 0x3c6e(s0)
+000ff218: 15200077    bne   t1, zero, done
+000ff21c: 00000000    nop
+000ff220: 2da90006    sltiu t1, t5, 6
+000ff224: 11200074    beq   t1, zero, done
+000ff228: 00000000    nop
+000ff22c: 3c1101d1    lui   s1, 0x01d1
+000ff230: 8e31d710    lw    s1, -0x28f0(s1)
+000ff234: 12200070    beq   s1, zero, done
+000ff238: 00000000    nop
+000ff23c: 92093c74    lbu   t1, 0x3c74(s0)
+000ff240: 022d7821    addu  t7, s1, t5
+000ff244: a1e900c5    sb    t1, 0xc5(t7)
+000ff248: 8e093c7c    lw    t1, 0x3c7c(s0)
+000ff24c: 000d7880    sll   t7, t5, 2
+000ff250: 022f7821    addu  t7, s1, t7
+000ff254: ade900cc    sw    t1, 0xcc(t7)
+000ff258: a20c3c6c    sb    t4, 0x3c6c(s0)
+000ff25c: a22c0116    sb    t4, 0x116(s1)
+000ff260: 022c7821    addu  t7, s1, t4
+000ff264: 91e900c5    lbu   t1, 0xc5(t7)
+000ff268: a2093c74    sb    t1, 0x3c74(s0)
+000ff26c: a2290117    sb    t1, 0x117(s1)
+000ff270: 000c7880    sll   t7, t4, 2
+000ff274: 022f7821    addu  t7, s1, t7
+000ff278: 8de900cc    lw    t1, 0xcc(t7)
+000ff27c: ae093c7c    sw    t1, 0x3c7c(s0)
+000ff280: ae290138    sw    t1, 0x138(s1)
+000ff284: 01809821    addu  s3, t4, zero
+000ff288: 8e0929f8    lw    t1, 0x29f8(s0)
+000ff28c: ae0929d8    sw    t1, 0x29d8(s0)
+000ff290: 8e0929fc    lw    t1, 0x29fc(s0)
+000ff294: ae0929dc    sw    t1, 0x29dc(s0)
+000ff298: 8e092a00    lw    t1, 0x2a00(s0)
+000ff29c: ae0929e0    sw    t1, 0x29e0(s0)
+000ff2a0: 8e092a04    lw    t1, 0x2a04(s0)
+000ff2a4: ae0929e4    sw    t1, 0x29e4(s0)
+000ff2a8: 8e092a08    lw    t1, 0x2a08(s0)
+000ff2ac: ae0929e8    sw    t1, 0x29e8(s0)
+000ff2b0: 8e092a0c    lw    t1, 0x2a0c(s0)
+000ff2b4: ae0929ec    sw    t1, 0x29ec(s0)
+000ff2b8: 8e092a10    lw    t1, 0x2a10(s0)
+000ff2bc: ae0929f0    sw    t1, 0x29f0(s0)
+000ff2c0: 8e092a14    lw    t1, 0x2a14(s0)
+000ff2c4: ae0929f4    sw    t1, 0x29f4(s0)
+000ff2c8: 0c096e30    jal   0x25b8c0
+000ff2cc: 02002021    addu  a0, s0, zero
+000ff2d0: 24040000    addiu a0, zero, 0
+000ff2d4: 0c080fc8    jal   0x203f20
+000ff2d8: 26250104    addiu a1, s1, 0x104
+000ff2dc: 26092470    addiu t1, s0, 0x2470
+000ff2e0: 260a24a8    addiu t2, s0, 0x24a8
+000ff2e4: ad200000    sw    zero, 0(t1)
+000ff2e8: 25290004    addiu t1, t1, 4
+000ff2ec: 152afffd    bne   t1, t2, clear_packs
+000ff2f0: 00000000    nop
+000ff2f4: 3c090010    lui   t1, 0x0010
+000ff2f8: 240a0001    addiu t2, zero, 1
+000ff2fc: ad2af7e8    sw    t2, -2072(t1)
+000ff300: 3c090010    lui   t1, 0x0010
+000ff304: 8d29f7e4    lw    t1, -2076(t1)
+000ff308: 15200030    bne   t1, zero, hud_done
+000ff30c: 00000000    nop
+000ff310: 8e490024    lw    t1, 0x24(s2)
+000ff314: 3c0a0002    lui   t2, 0x0002
+000ff318: 012a4821    addu  t1, t1, t2
+000ff31c: 8d328e90    lw    s2, -0x7170(t1)
+000ff320: 1240002a    beq   s2, zero, hud_done
+000ff324: 00000000    nop
+000ff328: 3c09005f    lui   t1, 0x005f
+000ff32c: 01334821    addu  t1, t1, s3
+000ff330: 91335bb8    lbu   s3, 0x5bb8(t1)
+000ff334: a253554a    sb    s3, 0x554a(s2)
+000ff338: 8e480038    lw    t0, 0x38(s2)
+000ff33c: 8d090008    lw    t1, 8(t0)
+000ff340: 85290000    lh    t1, 0(t1)
+000ff344: 15200012    bne   t1, zero, single
+000ff348: 8d0a000c    lw    t2, 0xc(t0)
+000ff34c: 8d4b0004    lw    t3, 4(t2)
+000ff350: 00136840    sll   t5, s3, 1
+000ff354: 25ae0014    addiu t6, t5, 0x14
+000ff358: 016e782b    sltu  t7, t3, t6
+000ff35c: 15e0001b    bne   t7, zero, hud_done
+000ff360: 00000000    nop
+000ff364: 000d7080    sll   t6, t5, 2
+000ff368: 014e7021    addu  t6, t2, t6
+000ff36c: 8dc60050    lw    a2, 0x50(t6)
+000ff370: 8dc50054    lw    a1, 0x54(t6)
+000ff374: 10c00015    beq   a2, zero, hud_done
+000ff378: 00000000    nop
+000ff37c: 10a00013    beq   a1, zero, hud_done
+000ff380: 00000000    nop
+000ff384: 01463021    addu  a2, t2, a2
+000ff388: 10000003    beq   zero, zero, bind
+000ff38c: 01452821    addu  a1, t2, a1
+000ff390: 01402821    addu  a1, t2, zero
+000ff394: 01403021    addu  a2, t2, zero
+000ff398: 00a08021    addu  s0, a1, zero
+000ff39c: 00c08821    addu  s1, a2, zero
+000ff3a0: 0c04f598    jal   0x13d660
+000ff3a4: 264430d4    addiu a0, s2, 0x30d4
+000ff3a8: 264430c0    addiu a0, s2, 0x30c0
+000ff3ac: 02002821    addu  a1, s0, zero
+000ff3b0: 0c0a0484    jal   0x281210
+000ff3b4: 02203021    addu  a2, s1, zero
+000ff3b8: 10400004    beq   v0, zero, hud_done
+000ff3bc: 00000000    nop
+000ff3c0: 264430c0    addiu a0, s2, 0x30c0
+000ff3c4: 0c0a058c    jal   0x281630
+000ff3c8: 24050001    addiu a1, zero, 1
+000ff3cc: 3c090010    lui   t1, 0x0010
+000ff3d0: 8d29f7f0    lw    t1, -2064(t1)
+000ff3d4: 11200008    beq   t1, zero, done
+000ff3d8: 00000000    nop
+000ff3dc: 3c0401e6    lui   a0, 0x01e6
+000ff3e0: 24848e80    addiu a0, a0, -0x7180
+000ff3e4: 24050000    addiu a1, zero, 0
+000ff3e8: 24060019    addiu a2, zero, 0x19
+000ff3ec: 24070000    addiu a3, zero, 0
+000ff3f0: 0c0cf98c    jal   0x33e630
+000ff3f4: 24080000    addiu t0, zero, 0
+000ff3f8: dfbf0000    ld    ra, 0(sp)
+000ff3fc: 7bb00010    lq    s0, 0x10(sp)
+000ff400: 7bb10020    lq    s1, 0x20(sp)
+000ff404: 7bb20030    lq    s2, 0x30(sp)
+000ff408: 7bb30040    lq    s3, 0x40(sp)
+000ff40c: 03e00008    jr    ra
+000ff410: 27bd0060    addiu sp, sp, 0x60
+001ec488: 0c07b7ec    jal 0x1edfb0   (original, restored)
+001ec468: 0c03fc00    jal 0xff000   (hook, replaces jal 0x1edf20)

@@ -1,0 +1,78 @@
+plugins {
+     id 'com.android.application'
+}
+
+// Devil May Cry 3 (port nativo do Xbox 360): o jogo recompilado + o runtime viram libmain.so, carregada pelo
+// SDLActivity do SDL3. x86_64 para o emulador do PC, arm64-v8a para os celulares.
+android {
+    namespace = "org.dmc3port"
+    compileSdkVersion 35
+    ndkVersion = "28.2.13676358"
+    defaultConfig {
+        applicationId "org.dmc3port"
+        minSdkVersion 30
+        targetSdkVersion 35
+        versionCode 2
+        versionName "1.0"
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_PLATFORM=android-30", "-DANDROID_STL=c++_static"
+                // -Pabis=x86_64 compila só uma arquitetura (o emulador), mais rápido nos testes
+                abiFilters(*(project.hasProperty('abis') ? project.abis.split(',') : ['x86_64', 'arm64-v8a']))
+            }
+        }
+    }
+    // duas versões para download, com o mesmo applicationId (uma substitui a outra, mantendo saves e configurações):
+    // completo tem o player de vídeo (FFmpeg) e toca as cutscenes da pasta Media/wmv; leve pula as cutscenes e dispensa
+    // copiar os vídeos (1,1 GB a menos no celular)
+    flavorDimensions = ["video"]
+    productFlavors {
+        completo {
+            dimension "video"
+            externalNativeBuild { cmake { arguments "-DDMC3_VIDEO=ON" } }
+        }
+        leve {
+            dimension "video"
+            versionNameSuffix "-leve"
+            externalNativeBuild { cmake { arguments "-DDMC3_VIDEO=OFF" } }
+        }
+    }
+    // assinatura da versão para download: keystore.properties (fora do git) aponta para a chave; sem ele, usa a de teste
+    def keystoreFile = rootProject.file('keystore.properties')
+    signingConfigs {
+        if (keystoreFile.exists()) {
+            def props = new Properties()
+            keystoreFile.withInputStream { props.load(it) }
+            dmc3 {
+                storeFile rootProject.file(props['storeFile'])
+                storePassword props['storePassword']
+                keyAlias props['keyAlias']
+                keyPassword props['keyPassword']
+            }
+        }
+    }
+    buildTypes {
+        // o código recompilado é grande: mesmo a versão de teste sai otimizada (sem otimização fica lento demais)
+        debug {
+            externalNativeBuild { cmake { arguments "-DCMAKE_BUILD_TYPE=Release" } }
+        }
+        release {
+            minifyEnabled false
+            signingConfig keystoreFile.exists() ? signingConfigs.dmc3 : signingConfigs.debug
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+    externalNativeBuild {
+        cmake {
+            path 'jni/CMakeLists.txt'
+            version '3.31.6'
+        }
+    }
+    lint {
+        abortOnError = false
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+}

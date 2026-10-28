@@ -1,0 +1,53 @@
+# Arquivos do jogo (da Capcom): nunca vão para o repositório
+x360/
+ps2/
+pc/
+saves/
+saves_backup_celular/
+teste_audio/
+*.nsp
+*.xex
+*.pe
+*.iso
+*.wmv
+
+# código recompilado a partir do executável do jogo e saídas de compilação
+recomp/ppc/
+recomp/build/
+recomp/bin/
+build/
+*.raw
+*.rgba
+
+# ferramentas baixadas ou compiladas (o README explica como obter)
+tools/ffmpeg/
+tools/ffmpeg-src/
+tools/ffmpeg-android/
+tools/SDL3/
+tools/SDL3-3.4.18/
+tools/XenonRecomp/
+
+# Android: saídas, configuração local e a chave de assinatura (guarde uma cópia fora do git!)
+android/.gradle/
+android/app/build/
+android/app/.cxx/
+android/build/
+android/local.properties
+android/keystore/
+android/keystore.properties
+android/build_log*.txt
+android/icon/
+
+# logs e capturas de teste
+run_*.txt
+*.log
+x360_files.txt
+ps2_files.txt
+android/release/
+
+# gerados
+__pycache__/
+*.pyc
+*.exe
+recomp/*_log.txt
+tests/zlib_vectors.bin
