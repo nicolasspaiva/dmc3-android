@@ -1,5 +1,7 @@
 # Devil May Cry 3 — port nativo para Android
 
+[English](README.en.md) | **Português**
+
 Port nativo do **Devil May Cry 3: Special Edition** (versão da *Devil May Cry HD Collection* do Xbox 360) para celulares
 Android. O código do jogo foi recompilado estaticamente de PowerPC para ARM64 com o
 [XenonRecomp](https://github.com/hedge-dev/XenonRecomp). Gráficos, áudio, vídeos, saves e controles são
@@ -78,6 +80,10 @@ necessária. A história não muda: o jogo segue para a cena ou fase seguinte.
 **Para adicionar as cutscenes depois:** instale a versão completa por cima da leve e copie a pasta `wmv/` para
 `DMC3/Media/`.
 
+**Cutscenes em tempo real e sincronia:** o jogo avança as cutscenes do motor um quadro de cada vez, enquanto as falas e a
+música andam pelo relógio. Num celular que não aguenta 60 quadros/s numa cena pesada, a imagem ficaria para trás do
+som. O **Pular quadros** (veja [o menu](#menu-do-port-engrenagem-embaixo-no-meio)) mantém os dois juntos.
+
 ---
 
 ## Saves
@@ -105,7 +111,7 @@ DMC3/
 - **Compatibilidade:** o `save.bin` é o mesmo formato do jogo. Um save criado pelo port no PC funciona no celular e
   vice-versa (basta copiar a pasta `SaveGame`).
 
-As **configurações do port** (modo de tela, layout dos botões, controles visíveis, padrão do controle) ficam dentro do
+As **configurações do port** (modo de tela, layout dos botões, controles visíveis, padrão do controle, pular quadros) ficam dentro do
 app. Elas voltam ao padrão se o app for desinstalado. Os saves não são afetados.
 
 **Vindo de uma versão de teste antiga?** Elas guardavam tudo em `Android/data/org.dmc3port/files`. Na primeira
@@ -145,6 +151,7 @@ abertura desta versão, o app move sozinho os arquivos e os saves de lá para a 
 | As cutscenes não aparecem | Na versão leve isso é esperado. Na completa, confira a pasta `DMC3/Media/wmv/`. |
 | Áudio fora de sincronia nas cutscenes em tempo real | Deixe **Pular quadros** em automático no menu da engrenagem. |
 | O app fecha ao abrir | Envie o arquivo `DMC3/dmc3_log.txt` ao abrir uma issue. |
+| Desempenho baixo | Envie o `DMC3/dmc3_log.txt` numa issue: a cada 2 s ele registra os quadros/s e o tempo de cada parte do quadro (jogo, preparação, GL, apresentação). |
 
 ---
 
