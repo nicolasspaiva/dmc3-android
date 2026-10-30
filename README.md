@@ -128,6 +128,9 @@ abertura desta versão, o app move sozinho os arquivos e os saves de lá para a 
   celular, sem esticar os personagens).
 - **Controles na tela:** visíveis ou ocultos.
 - **Botões do controle:** posição Xbox ou letras.
+- **Pular quadros:** automático (padrão) ou desligado. Num celular que não aguenta 60 quadros/s numa cena pesada, o
+  app deixa de desenhar alguns quadros, no máximo um a cada dois, para o jogo não ficar mais lento que o relógio. Assim
+  as falas e a música das cutscenes em tempo real continuam sincronizadas com a imagem.
 - **Editar layout dos botões:** arraste cada botão. Toque num botão e use − / + para mudar o tamanho, depois **Pronto**.
 - **Restaurar layout padrão.**
 
@@ -140,6 +143,7 @@ abertura desta versão, o app move sozinho os arquivos e os saves de lá para a 
 | "Arquivos do jogo não encontrados" | Confira se a pasta é `Memória interna/DMC3` (não `Download/DMC3`) e se os nomes estão iguais aos da lista. |
 | "O DMC3.xex é de outra versão do jogo" | O port só funciona com o `DMC3.xex` da *HD Collection* do Xbox 360. Versões de PS2, PC, PS3/PS4 ou Switch não servem. |
 | As cutscenes não aparecem | Na versão leve isso é esperado. Na completa, confira a pasta `DMC3/Media/wmv/`. |
+| Áudio fora de sincronia nas cutscenes em tempo real | Deixe **Pular quadros** em automático no menu da engrenagem. |
 | O app fecha ao abrir | Envie o arquivo `DMC3/dmc3_log.txt` ao abrir uma issue. |
 
 ---

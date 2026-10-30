@@ -38,6 +38,8 @@ namespace xenos
         std::vector<VertexFetch> fetches;
         uint32_t textureMask = 0;         // fetch constants de textura usadas
         bool writesDepth = false;
+        uint32_t constantMask[8] = {};    // constantes VC/PC lidas (bit n de [n / 32]), para enviar só essas
+        bool relativeConstants = false;   // índice relativo ao a0: qualquer constante pode ser lida
     };
 
     // words: o programa (instruções de controle a partir da palavra 0), já na ordem de bytes do host

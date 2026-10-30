@@ -67,14 +67,41 @@ namespace renderer
         uint32_t depthWidth = 0, depthHeight = 0;   // tamanho da superfície de profundidade (0 = o mesmo da cor)
     };
 
+    // vértices de um atributo já convertidos para vec4 (gpu.cpp guarda e reaproveita enquanto a memória do console não
+    // muda). version muda quando data muda; o renderer mantém o buffer do GL e só reenvia quando a versão mudou
+    struct VertexStream
+    {
+        std::vector<float> data;
+        uint32_t version = 0;
+        uint32_t glBuffer = 0, glVersion = ~0u;
+        // dados que mudam (DrawVerticesUP, ou vértices que o jogo reescreve): vão para o buffer circular do renderer;
+        // os que se repetem iguais em quadros seguidos ganham buffer próprio
+        bool transient = false;
+        uint32_t ringOffset = 0, ringVersion = ~0u, ringGeneration = ~0u;   // onde e qual versão está no circular
+    };
+
+    // índices de um desenho (0xFFFFFFFF reinicia a tira), com o mesmo esquema de versão
+    struct IndexStream
+    {
+        std::vector<uint32_t> data;
+        uint32_t version = 0;
+        uint32_t glBuffer = 0, glVersion = ~0u;
+        uint32_t glPrimitive = 0, glCount = 0;   // quads viram triângulos ao enviar: guarda a forma enviada
+    };
+
+    // libera o buffer do GL de um fluxo que saiu da cache
+    void Forget(VertexStream& stream);
+    void Forget(IndexStream& stream);
+
     struct DrawCall
     {
         const xenos::Shader* vs = nullptr;
         const xenos::Shader* ps = nullptr;
         uint64_t vsKey = 0, psKey = 0;               // identificam os shaders (para o cache de programas)
-        std::vector<float> attributes;               // atributo i: vertexCount vec4 a partir de i * vertexCount * 4
+        const VertexStream* streams[16] = {};        // atributo i do shader: vertexCount vec4
+        uint32_t streamOffsets[16] = {};             // em bytes dentro do fluxo (os desenhos UP juntam tudo num só)
         uint32_t vertexCount = 0;
-        std::vector<uint32_t> indices;               // vazio: desenha os vértices em ordem
+        const IndexStream* indices = nullptr;        // nulo: desenha os vértices em ordem
         uint32_t primitive = 4;                      // tipo da Xenos: 4 lista, 5 leque, 6 tira de triângulos, 13 quads
         const float* vsConstants = nullptr;          // 256 vec4
         const float* psConstants = nullptr;
@@ -87,6 +114,8 @@ namespace renderer
     // tudo isto roda na thread que desenha (a thread principal do jogo)
     void EnsureWindow();
     void Draw(const DrawCall& call);
+    // este quadro está sendo pulado (o jogo atrasou): os desenhos não precisam nem ser preparados
+    bool SkippingFrame();
     // flags do D3D do 360: bits 0-3 render targets, 0x10 profundidade, 0x20 stencil; cor RGBA em 0..1
     void Clear(const Target& target, uint32_t flags, const float color[4], float z, uint32_t stencil);
     // copia o render target (ou a profundidade) para a textura do jogo em destAddress (o que o D3DDevice_Resolve faz

@@ -40,6 +40,10 @@ namespace gpu
         uint64_t lastPresentNs = 0;
     }
 
+    // tempo por quadro (vai no relatório de 2 em 2 s): preparação dos desenhos (leitura de vértices, constantes e
+    // estado do console), chamadas ao GL e apresentação; o resto é o código do jogo
+    Profile profile;
+
     void BlockedTime(int kind, uint64_t ns)
     {
         if (renderThread)
@@ -64,13 +68,24 @@ namespace gpu
         if (stats.frame <= 3 || seconds >= 2.0)
         {
             double fps = seconds > 0 ? double(stats.frame - framesAtReport) / seconds : 0;
-            fprintf(stderr, "[gpu] quadro %llu: %u draws (%u indexados, %u UP), %u clears, %u esperas de GPU; %.1f quadros/s\n",
-                (unsigned long long)stats.frame, stats.draws, stats.indexedDraws, stats.drawsUP, stats.clears, stats.gpuWaits, fps);
+            uint64_t frames = stats.frame - framesAtReport;
+            auto ms = [&](uint64_t ns) { return frames ? double(ns) / 1e6 / double(frames) : 0.0; };
+            double total = frames ? seconds * 1000.0 / double(frames) : 0;
+            double prep = ms(profile.prep), gl = ms(profile.gl), present = ms(profile.present);
+            fprintf(stderr, "[gpu] quadro %llu: %u draws (%u indexados, %u UP), %u clears, %u esperas de GPU; %.1f quadros/s; "
+                "por quadro: jogo %.1f ms, preparação %.1f ms, GL %.1f ms, apresentação %.1f ms, %llu pulados, %.0f envios (%.0f KB) em %.0f desenhos; GL: texturas %.2f ms, envio %.2f ms\n",
+                (unsigned long long)stats.frame, stats.draws, stats.indexedDraws, stats.drawsUP, stats.clears, stats.gpuWaits, fps,
+                std::max(0.0, total - prep - gl - present), prep, gl, present, (unsigned long long)profile.skipped,
+                frames ? double(profile.uploads) / frames : 0.0, frames ? double(profile.uploadBytes) / 1024 / frames : 0.0,
+                frames ? double(profile.draws) / frames : 0.0, ms(profile.textures), ms(profile.submit));
+            profile = {};
             lastReport = now;
             framesAtReport = stats.frame;
         }
         stats.draws = stats.indexedDraws = stats.drawsUP = stats.clears = stats.gpuWaits = 0;
+        uint64_t presentStart = platform::NowNs();
         renderer::Present(stats.frame, frontBuffer);
+        profile.present += platform::NowNs() - presentStart;
     }
 }
 
@@ -362,43 +377,161 @@ namespace
         }
     }
 
-    // monta os atributos dos vértices first..first+count-1; upData != 0 substitui o stream 0 (DrawVerticesUP)
-    bool FetchVertices(uint32_t device, const xenos::Shader& vs, uint32_t first, uint32_t count, uint32_t upData,
-        std::vector<float>& out)
+    // ---- cache de vértices ----
+    // Converter cada vértice para vec4 na CPU e reenviar ao GL a cada desenho era a parte mais cara do quadro. Os
+    // vértices convertidos ficam guardados por fluxo (endereço, formato, faixa de vértices) junto com um hash dos bytes
+    // de origem, conferido uma vez por quadro: só reconverte se o jogo reescreveu a memória.
+    uint64_t HashBytes(uint32_t address, size_t bytes)
     {
-        out.assign(size_t(vs.fetches.size()) * count * 4, 0.0f);
-        for (size_t i = 0; i < vs.fetches.size(); i++)
+        const uint8_t* p = kernel::Guest<uint8_t>(address);
+        uint64_t h = 1469598103934665603ull ^ bytes;
+        size_t i = 0;
+        for (; i + 8 <= bytes; i += 8)
+        {
+            uint64_t w;
+            memcpy(&w, p + i, 8);
+            h = (h ^ w) * 0x9E3779B97F4A7C15ull;
+        }
+        for (; i < bytes; i++)
+            h = (h ^ p[i]) * 0x100000001B3ull;
+        return h ^ (h >> 29);
+    }
+
+    struct StreamKey
+    {
+        uint32_t base, first, count, endian;
+        uint32_t slot, offset, stride, format;
+        int32_t expAdjust;
+        bool isSigned, isInteger;
+        bool operator==(const StreamKey& o) const { return memcmp(this, &o, sizeof(*this)) == 0; }
+    };
+    struct StreamKeyHash
+    {
+        size_t operator()(const StreamKey& k) const
+        {
+            uint64_t h = 1469598103934665603ull;
+            const uint8_t* p = reinterpret_cast<const uint8_t*>(&k);
+            for (size_t i = 0; i < sizeof(k); i++)
+                h = (h ^ p[i]) * 0x100000001B3ull;
+            return size_t(h);
+        }
+    };
+    struct CachedStream
+    {
+        renderer::VertexStream stream;
+        uint64_t hash = 0;
+        uint64_t checkedFrame = ~0ull;
+        bool valid = false;
+    };
+    std::unordered_map<StreamKey, CachedStream, StreamKeyHash> vertexCache;
+    // hash de cada faixa de memória no quadro atual (vários atributos intercalados leem a mesma faixa)
+    std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> regionHashes;   // chave -> (quadro, hash)
+
+    uint64_t RegionHash(uint32_t address, size_t bytes)
+    {
+        uint64_t key = (uint64_t(address) << 32) ^ bytes;
+        auto& entry = regionHashes[key];
+        if (entry.first != gpu::Stats().frame + 1)
+            entry = { gpu::Stats().frame + 1, HashBytes(address, bytes) };
+        return entry.second;
+    }
+
+    // tira da cache o que não é usado há 10 s (e o hash das faixas, a cada quadro novo)
+    void TrimVertexCache()
+    {
+        static uint64_t lastTrim = 0;
+        uint64_t frame = gpu::Stats().frame;
+        if (frame < lastTrim + 60)
+            return;
+        lastTrim = frame;
+        for (auto it = vertexCache.begin(); it != vertexCache.end();)
+            if (it->second.checkedFrame + 60 < frame)
+            {
+                renderer::Forget(it->second.stream);
+                it = vertexCache.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        regionHashes.clear();
+    }
+
+    bool ConvertStream(const xenos::VertexFetch& f, uint32_t base, uint32_t endian, bool fromCpu, uint32_t first,
+        uint32_t count, std::vector<float>& out)
+    {
+        out.resize(size_t(count) * 4);
+        for (uint32_t v = 0; v < count; v++)
+        {
+            uint32_t address = base + ((first + v) * f.stride + f.offset) * 4;
+            if (!FetchVertex(f, address, endian, fromCpu, &out[size_t(v) * 4]))
+            {
+                static int warned = 0;
+                if (warned++ < 8)
+                    fprintf(stderr, "[gpu] formato de vértice %u ainda não suportado\n", f.format);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // atributos dos vértices first..first+count-1, um fluxo por vfetch do shader; upData != 0 substitui o stream 0
+    // (DrawVerticesUP, que muda a cada desenho e não entra na cache)
+    bool FetchVertices(uint32_t device, const xenos::Shader& vs, uint32_t first, uint32_t count, uint32_t upData,
+        renderer::DrawCall& call)
+    {
+        // DrawVerticesUP: todos os atributos num fluxo só (um envio ao GL por desenho), um atrás do outro
+        static renderer::VertexStream upStream = [] { renderer::VertexStream s; s.transient = true; return s; }();
+        static std::vector<float> scratch;
+        bool hasUp = false;
+        TrimVertexCache();
+        for (size_t i = 0; i < vs.fetches.size() && i < 16; i++)
         {
             const xenos::VertexFetch& f = vs.fetches[i];
             uint32_t fetch = device + FetchConstants + f.slot * 8;
-            uint32_t base = upData && f.slot == 95 ? upData : PhysicalToGuest(kernel::Load32(fetch) & 0xFFFFFFFC);
+            bool fromCpu = upData && f.slot == 95;
+            uint32_t base = fromCpu ? upData : PhysicalToGuest(kernel::Load32(fetch) & 0xFFFFFFFC);
             // DrawVerticesUP: os vértices vêm da memória da CPU (big-endian = troca 8in32), não do fetch constant
-            uint32_t endian = upData && f.slot == 95 ? 2 : kernel::Load32(fetch + 4) & 3;
-            static const bool logDecl = getenv("DMC3_LOG_DECL") != nullptr;
-            if (logDecl && f.format == 25)
+            uint32_t endian = fromCpu ? 2 : kernel::Load32(fetch + 4) & 3;
+            if (fromCpu)
             {
-                static std::unordered_map<uint64_t, bool> logged;
-                uint32_t vsObject = kernel::Load32(device + VertexShader);
-                uint64_t key = (uint64_t(vsObject) << 32) | (f.slot << 16) | (f.offset << 8) | f.stride;
-                if (!logged[key])
-                {
-                    logged[key] = true;
-                    fprintf(stderr, "[gpu] 16_16 no VS %08X: slot %u stride %u offset %u endian %u\n", vsObject, f.slot, f.stride,
-                        f.offset, endian);
-                }
-            }
-            for (uint32_t v = 0; v < count; v++)
-            {
-                uint32_t address = base + ((first + v) * f.stride + f.offset) * 4;
-                if (!FetchVertex(f, address, endian, upData && f.slot == 95, &out[(i * count + v) * 4]))
-                {
-                    static int warned = 0;
-                    if (warned++ < 8)
-                        fprintf(stderr, "[gpu] formato de vértice %u ainda não suportado\n", f.format);
+                if (!hasUp)
+                    upStream.data.clear();
+                hasUp = true;
+                if (!ConvertStream(f, base, endian, true, first, count, scratch))
                     return false;
+                call.streamOffsets[i] = uint32_t(upStream.data.size() * sizeof(float));
+                upStream.data.insert(upStream.data.end(), scratch.begin(), scratch.end());
+                call.streams[i] = &upStream;
+                continue;
+            }
+            StreamKey key{ base, first, count, endian, f.slot, f.offset, f.stride, f.format, f.expAdjust, f.isSigned, f.isInteger };
+            CachedStream& c = vertexCache[key];
+            uint64_t frame = gpu::Stats().frame;
+            if (!c.valid || c.checkedFrame != frame)
+            {
+                uint64_t hash = RegionHash(base + first * f.stride * 4, size_t(count) * f.stride * 4);
+                c.checkedFrame = frame;
+                if (!c.valid || hash != c.hash)
+                {
+                    if (!ConvertStream(f, base, endian, false, first, count, c.stream.data))
+                        return false;
+                    c.hash = hash;
+                    c.valid = true;
+                    c.stream.version++;
+                    // novo ou reescrito: vai pelo buffer circular (muitos são de um quadro só, como partículas)
+                    c.stream.transient = true;
+                }
+                else
+                {
+                    // igual ao de um quadro anterior: vale a pena ter buffer próprio no GL
+                    c.stream.transient = false;
                 }
             }
+            call.streams[i] = &c.stream;
         }
+        if (hasUp)
+            upStream.version++;
         return true;
     }
 
@@ -540,19 +673,26 @@ namespace
 
     std::vector<float> vsConstants(1024), psConstants(1024);
 
-    void ReadConstants(uint32_t device)
+    // só as constantes que os shaders leem (todas, se o shader indexa pelo a0)
+    void ReadConstants(uint32_t device, const xenos::Shader& vs, const xenos::Shader& ps)
     {
-        for (int i = 0; i < 1024; i++)
-        {
-            vsConstants[i] = LoadF32(device + VertexConstants + 4 * i);
-            psConstants[i] = LoadF32(device + PixelConstants + 4 * i);
-        }
+        auto read = [&](const xenos::Shader& s, uint32_t base, std::vector<float>& out) {
+            for (uint32_t c = 0; c < 256; c++)
+                if (s.relativeConstants || (s.constantMask[c / 32] >> (c % 32) & 1))
+                    for (uint32_t k = 0; k < 4; k++)
+                        out[c * 4 + k] = LoadF32(base + 16 * c + 4 * k);
+        };
+        read(vs, device + VertexConstants, vsConstants);
+        read(ps, device + PixelConstants, psConstants);
     }
 
     // desenho nativo: lê shaders, vértices, constantes e estado do device depois que o D3D original gravou tudo
-    void NativeDraw(uint32_t device, uint32_t prim, uint32_t first, uint32_t vertexCount, const std::vector<uint32_t>& indices,
+    void NativeDraw(uint32_t device, uint32_t prim, uint32_t first, uint32_t vertexCount, const renderer::IndexStream* indices,
         uint32_t upData)
     {
+        if (renderer::SkippingFrame())
+            return;
+        uint64_t prepStart = platform::NowNs();
         const CachedShader* vs = GetShader(kernel::Load32(device + VertexShader), false, device);
         uint32_t psObject = kernel::Load32(device + PixelShader);
         const CachedShader* ps = GetShader(psObject, true, device);
@@ -577,9 +717,9 @@ namespace
         call.primitive = prim;
         call.vertexCount = vertexCount;
         call.indices = indices;
-        if (!FetchVertices(device, vs->shader, first, vertexCount, upData, call.attributes))
+        if (!FetchVertices(device, vs->shader, first, vertexCount, upData, call))
             return;
-        ReadConstants(device);
+        ReadConstants(device, vs->shader, ps->shader);
         std::copy(vs->literals.begin(), vs->literals.end(), vsConstants.end() - vs->literals.size());
         std::copy(ps->literals.begin(), ps->literals.end(), psConstants.end() - ps->literals.size());
         call.vsConstants = vsConstants.data();
@@ -590,7 +730,8 @@ namespace
             if (ps->shader.textureMask >> i & 1)
                 call.textures[i] = ReadTexture(device + FetchConstants + i * 0x18);
         // diagnóstico: shaders que leem uma textura de profundidade (formato 24_8) vão para DMC3_CAPTURE_DIR
-        if (const char* dir = getenv("DMC3_CAPTURE_DIR"))
+        static const char* captureDir = getenv("DMC3_CAPTURE_DIR");
+        if (captureDir)
             for (uint32_t i = 0; i < 32; i++)
                 if ((ps->shader.textureMask >> i & 1) && call.textures[i].format == 22)
                 {
@@ -609,7 +750,10 @@ namespace
         call.state = ReadState(device, call.target);
         if (!psObject)
             call.state.colorMask = 0;
+        uint64_t glStart = platform::NowNs();
+        gpu::profile.prep += glStart - prepStart;
         renderer::Draw(call);
+        gpu::profile.gl += platform::NowNs() - glStart;
     }
 
     // ---- captura de um quadro (DMC3_CAPTURE=<quadro>, DMC3_CAPTURE_DIR para os shaders) ----
@@ -685,7 +829,7 @@ GUEST_OVERRIDE(82479038)
     GUEST_ORIGINAL(82479038)(ctx, base);
     if (Capturing())
         CaptureDraw("DrawVertices", device, prim, start, count, 0);
-    NativeDraw(device, prim, start, count, {}, 0);
+    NativeDraw(device, prim, start, count, nullptr, 0);
 }
 
 // D3DDevice_DrawIndexedVertices(device, PrimitiveType, BaseVertexIndex, StartIndex, IndexCount)
@@ -703,28 +847,70 @@ GUEST_OVERRIDE(82479450)
         return;
     bool wide = kernel::Load32(ib) >> 31;
     uint32_t address = kernel::Load32(ib + 0x18);
-    std::vector<uint32_t> indices(count);
-    uint32_t lo = ~0u, hi = 0;
-    for (uint32_t i = 0; i < count; i++)
+    // índices convertidos ficam em cache como os vértices (mesma faixa do buffer, mesmos bytes = mesmos índices)
+    struct CachedIndices
     {
-        uint32_t index = wide ? kernel::Load32(address + 4 * (start + i))
-                              : __builtin_bswap16(*kernel::Guest<uint16_t>(address + 2 * (start + i)));
-        if (index == (wide ? 0xFFFFFFFFu : 0xFFFFu))
-        {
-            indices[i] = ~0u;
-            continue;
-        }
-        index += baseVertex;
-        indices[i] = index;
-        lo = std::min(lo, index);
-        hi = std::max(hi, index);
+        renderer::IndexStream stream;
+        uint64_t hash = 0, checkedFrame = ~0ull;
+        uint32_t lo = 0, hi = 0;
+        bool valid = false;
+    };
+    static std::unordered_map<uint64_t, CachedIndices> indexCache;
+    static uint64_t lastTrim = 0;
+    uint64_t frame = gpu::Stats().frame;
+    if (frame >= lastTrim + 60)
+    {
+        lastTrim = frame;
+        for (auto it = indexCache.begin(); it != indexCache.end();)
+            if (it->second.checkedFrame + 60 < frame)
+            {
+                renderer::Forget(it->second.stream);
+                it = indexCache.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
     }
-    if (lo > hi || hi - lo > 0x40000)
+    uint32_t first = address + (wide ? 4 : 2) * start;
+    uint64_t key = (uint64_t(first) << 32) ^ (uint64_t(count) << 1) ^ (uint64_t(baseVertex) * 0x9E3779B97F4A7C15ull) ^ wide;
+    CachedIndices& c = indexCache[key];
+    if (!c.valid || c.checkedFrame != frame)
+    {
+        uint64_t hash = HashBytes(first, size_t(count) * (wide ? 4 : 2));
+        c.checkedFrame = frame;
+        if (!c.valid || hash != c.hash)
+        {
+            std::vector<uint32_t>& indices = c.stream.data;
+            indices.resize(count);
+            uint32_t lo = ~0u, hi = 0;
+            for (uint32_t i = 0; i < count; i++)
+            {
+                uint32_t index = wide ? kernel::Load32(address + 4 * (start + i))
+                                      : __builtin_bswap16(*kernel::Guest<uint16_t>(address + 2 * (start + i)));
+                if (index == (wide ? 0xFFFFFFFFu : 0xFFFFu))
+                {
+                    indices[i] = ~0u;
+                    continue;
+                }
+                index += baseVertex;
+                indices[i] = index;
+                lo = std::min(lo, index);
+                hi = std::max(hi, index);
+            }
+            for (uint32_t& index : indices)
+                if (index != ~0u)
+                    index -= lo;
+            c.lo = lo;
+            c.hi = hi;
+            c.hash = hash;
+            c.valid = true;
+            c.stream.version++;
+        }
+    }
+    if (c.lo > c.hi || c.hi - c.lo > 0x40000)
         return;
-    for (uint32_t& index : indices)
-        if (index != ~0u)
-            index -= lo;
-    NativeDraw(device, prim, lo, hi - lo + 1, indices, 0);
+    NativeDraw(device, prim, c.lo, c.hi - c.lo + 1, &c.stream, 0);
 }
 
 // D3DDevice_DrawVerticesUP(device, PrimitiveType, VertexCount, const void* data, Stride)
@@ -735,7 +921,7 @@ GUEST_OVERRIDE(82478FF0)
     GUEST_ORIGINAL(82478FF0)(ctx, base);
     if (Capturing())
         CaptureDraw("DrawVerticesUP", device, prim, count, data, 0);
-    NativeDraw(device, prim, 0, count, {}, data);
+    NativeDraw(device, prim, 0, count, nullptr, data);
 }
 
 // D3DDevice_ClearF(device, Flags, const D3DRECT* Rect, const D3DVECTOR4* Color, float Z (f1), Stencil (r8))
@@ -756,7 +942,9 @@ GUEST_OVERRIDE(82471D90)
             color[i] = LoadF32(ctx.r6.u32 + 4 * i);
     if (Capturing())
         fprintf(stderr, "[capture]   cor do Clear: %g %g %g %g\n", color[0], color[1], color[2], color[3]);
+    uint64_t glStart = platform::NowNs();
     renderer::Clear(ReadTarget(ctx.r3.u32), ctx.r4.u32, color, float(ctx.f1.f64), ctx.r8.u32);
+    gpu::profile.gl += platform::NowNs() - glStart;
     GUEST_ORIGINAL(82471D90)(ctx, base);
 }
 
@@ -779,7 +967,9 @@ GUEST_OVERRIDE(82478AD0)
         }
         // textura: fetch constant em +0x1C
         renderer::Texture t = ReadTexture(dest + 0x1C);
+        uint64_t glStart = platform::NowNs();
         renderer::Resolve(ReadTarget(device), t.address, t.width, t.height, (flags & 4) != 0);
+        gpu::profile.gl += platform::NowNs() - glStart;
     }
     GUEST_ORIGINAL(82478AD0)(ctx, base);
 }

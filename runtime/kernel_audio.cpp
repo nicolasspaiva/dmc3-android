@@ -197,11 +197,15 @@ namespace
         while (running)
         {
             uint64_t now = platform::NowNs();
-            if (stream && now >= next && SDL_GetAudioStreamQueued(stream) < QueueTarget)
+            int queued = stream ? SDL_GetAudioStreamQueued(stream) : QueueTarget;
+            if (stream && now >= next && queued < QueueTarget)
             {
                 kernel::CallGuest(ctx, callback, { callbackArg });
+                // o relógio da placa de som não bate exatamente com o do sistema: se a fila está abaixo da metade, gera
+                // 2% mais rápido até recuperar (sem rajadas, que estalam o som), senão a fila esvaziava aos poucos
+                uint64_t period = queued < QueueTarget / 2 ? Period * 98 / 100 : Period;
                 // depois de uma pausa longa não tenta recuperar tudo de uma vez: no máximo 2 quadros de atraso
-                next = std::max(next + Period, now - 2 * Period);
+                next = std::max(next + period, now - 2 * period);
             }
             else
             {

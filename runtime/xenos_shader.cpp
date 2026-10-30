@@ -7,7 +7,9 @@
 #include "xenos_shader.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <set>
 
 namespace xenos
@@ -584,6 +586,24 @@ namespace xenos
         t.Run();
         t.Assemble();
         t.out.ok = t.out.error.empty();
+        // constantes que o código usa (VC[n] / PC[n]); um índice que não é número (relativo ao a0) usa todas
+        const std::string name = pixel ? "PC[" : "VC[";
+        for (size_t at = t.out.body.find(name); at != std::string::npos; at = t.out.body.find(name, at + 1))
+        {
+            size_t digits = at + name.size();
+            if (t.out.body.compare(digits, 4, "256]") == 0)
+                continue;   // a própria declaração "uniform vec4 VC[256]"
+            if (digits < t.out.body.size() && isdigit(uint8_t(t.out.body[digits])))
+            {
+                uint32_t index = uint32_t(strtoul(t.out.body.c_str() + digits, nullptr, 10));
+                if (index < 256)
+                    t.out.constantMask[index / 32] |= 1u << (index % 32);
+            }
+            else
+            {
+                t.out.relativeConstants = true;
+            }
+        }
         return t.out;
     }
 }

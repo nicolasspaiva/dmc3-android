@@ -1,6 +1,7 @@
 // Renderizador em OpenGL 3.3 core com SDL3. Feito para trocar por OpenGL ES 3 no Android só no
 // cabeçalho dos shaders e na criação do contexto.
 #include "renderer.h"
+#include "gpu.h"
 #include "input.h"
 #include "xenos_texture.h"
 #include "style_names.h"
@@ -63,6 +64,8 @@ namespace renderer
         X(PFNGLGENVERTEXARRAYSPROC, glGenVertexArrays)                        \
         X(PFNGLBINDVERTEXARRAYPROC, glBindVertexArray)                        \
         X(PFNGLGENBUFFERSPROC, glGenBuffers)                                  \
+        X(PFNGLDELETEBUFFERSPROC, glDeleteBuffers)                            \
+        X(PFNGLBUFFERSUBDATAPROC, glBufferSubData)                            \
         X(PFNGLBINDBUFFERPROC, glBindBuffer)                                  \
         X(PFNGLBUFFERDATAPROC, glBufferData)                                  \
         X(PFNGLVERTEXATTRIBPOINTERPROC, glVertexAttribPointer)                \
@@ -126,12 +129,59 @@ namespace renderer
             return s;
         }
 
+        // faixa de constantes que um shader lê, com a localização do primeiro elemento no programa
+        struct ConstantRange
+        {
+            uint32_t start, count;
+            GLint location;
+        };
+
         struct Program
         {
             GLuint id = 0;
             bool ok = false;
             GLint vc = -1, pc = -1, b = -1, alphaFunc = -1, alphaRef = -1, wideScale = -1;
+            // só as constantes usadas são enviadas, e só quando mudaram desde o último desenho com este programa
+            std::vector<ConstantRange> vsRanges, psRanges;
+            std::vector<float> vsSent, psSent;
+            uint32_t sentBools[8] = {};
+            bool boolsSent = false;
         };
+
+        // junta as constantes usadas em faixas (buracos de até 8 entram na faixa, para não fazer chamadas demais)
+        std::vector<ConstantRange> Ranges(GLuint program, const xenos::Shader& s, const char* name)
+        {
+            std::vector<ConstantRange> ranges;
+            auto used = [&](uint32_t c) { return s.relativeConstants || (s.constantMask[c / 32] >> (c % 32) & 1); };
+            for (uint32_t c = 0; c < 256; c++)
+            {
+                if (!used(c))
+                    continue;
+                if (!ranges.empty() && c - (ranges.back().start + ranges.back().count) <= 8)
+                    ranges.back().count = c - ranges.back().start + 1;
+                else
+                    ranges.push_back({ c, 1, -1 });
+            }
+            for (ConstantRange& r : ranges)
+                r.location = glGetUniformLocation(program, (std::string(name) + "[" + std::to_string(r.start) + "]").c_str());
+            return ranges;
+        }
+
+        // envia as faixas que mudaram desde o último envio deste programa
+        void SendConstants(const std::vector<ConstantRange>& ranges, std::vector<float>& sent, const float* constants)
+        {
+            if (sent.empty())
+                sent.assign(1024, std::nanf(""));
+            for (const ConstantRange& r : ranges)
+            {
+                const float* src = constants + r.start * 4;
+                float* old = sent.data() + r.start * 4;
+                if (r.location < 0 || memcmp(src, old, r.count * 16) == 0)
+                    continue;
+                glUniform4fv(r.location, GLsizei(r.count), src);
+                memcpy(old, src, r.count * 16);
+            }
+        }
         std::map<std::pair<uint64_t, uint64_t>, Program> programs;
 
         Program& GetProgram(const DrawCall& call)
@@ -165,6 +215,8 @@ namespace renderer
             p.alphaFunc = glGetUniformLocation(p.id, "alphaFunc");
             p.alphaRef = glGetUniformLocation(p.id, "alphaRef");
             p.wideScale = glGetUniformLocation(p.id, "wideScale");
+            p.vsRanges = Ranges(p.id, *call.vs, "VC");
+            p.psRanges = Ranges(p.id, *call.ps, "PC");
             for (int i = 0; i < 32; i++)
             {
                 std::string name = "T" + std::to_string(i);
@@ -255,11 +307,14 @@ namespace renderer
             return id;
         }
 
+        void MarkDirty();
+
         Surface& ColorSurface(const Target& t)
         {
             Surface& s = colorSurfaces[t.color];
             if (!s.texture || s.width != t.width || s.height != t.height)
             {
+                MarkDirty();
                 if (!s.texture)
                     glGenTextures(1, &s.texture);
                 glBindTexture(GL_TEXTURE_2D, s.texture);
@@ -275,15 +330,38 @@ namespace renderer
             return s;
         }
 
+        // ---- cache do estado do GL ----
+        // Os desenhos seguidos costumam ter o mesmo framebuffer, programa, estado e texturas: só chama o GL quando muda.
+        // Clear, Resolve, Present e os desenhos por cima (controles, aviso de estilo) mexem no estado por conta própria
+        // e marcam tudo como desconhecido (MarkDirty).
+        bool skipFrame = false;   // quadro sendo pulado (ver Present)
+        bool stateKnown = false;
+        GLuint boundFramebuffer = 0, boundProgram = 0;
+        RenderState lastState;
+        uint32_t lastTargetWidth = 0, lastTargetHeight = 0;
+        bool lastTargetDepth = false;
+        GLuint boundTextures[32] = {}, boundSamplers[32] = {};
+
+        void MarkDirty()
+        {
+            stateKnown = false;
+            boundFramebuffer = boundProgram = 0;
+            memset(boundTextures, 0, sizeof(boundTextures));
+            memset(boundSamplers, 0xFF, sizeof(boundSamplers));
+        }
+
         GLuint Framebuffer(const Target& t)
         {
             Surface& color = ColorSurface(t);
             GLuint& fbo = framebuffers[{ t.color, t.depth }];
             if (fbo)
             {
-                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                if (fbo != boundFramebuffer)
+                    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                boundFramebuffer = fbo;
                 return fbo;
             }
+            MarkDirty();   // a criação abaixo (e a da superfície acima) mexe em binds
             glGenFramebuffers(1, &fbo);
             glBindFramebuffer(GL_FRAMEBUFFER, fbo);
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, color.texture, 0);
@@ -319,7 +397,8 @@ namespace renderer
         {
             GLuint id = 0;
             uint64_t sample = 0;      // hash do conteúdo, para saber quando mudou
-            uint64_t checkedFrame = ~0ull;
+            uint64_t sparse = 0;      // amostra rápida (SparseSample)
+            uint64_t checkedFrame = 0;
         };
         std::unordered_map<uint64_t, CachedTexture> textures;
         std::vector<uint32_t> scratch;
@@ -331,6 +410,22 @@ namespace renderer
             const uint64_t* w = reinterpret_cast<const uint64_t*>(p);
             for (size_t i = 0; i < bytes / 8; i++)
                 h = (h ^ w[i]) * 0x9E3779B97F4A7C15ull;
+            return h ^ (h >> 29);
+        }
+
+        // 64 palavras de 8 bytes espalhadas pela textura
+        uint64_t SparseSample(const uint8_t* p, size_t bytes)
+        {
+            uint64_t h = 1469598103934665603ull ^ bytes;
+            size_t words = bytes / 8;
+            if (!words)
+                return h;
+            for (size_t k = 0; k < 64; k++)
+            {
+                uint64_t w;
+                memcpy(&w, p + (words * k / 64) * 8, 8);
+                h = (h ^ w) * 0x9E3779B97F4A7C15ull;
+            }
             return h ^ (h >> 29);
         }
 
@@ -352,14 +447,19 @@ namespace renderer
             const uint8_t* src = kernel::Guest<uint8_t>(t.address);
             size_t bytes = xenos::TextureBytes(t);
             CachedTexture& c = textures[key];
-            // texturas grandes são conferidas uma vez por quadro; as pequenas (texto) a cada uso, porque o jogo
-            // reescreve e desenha várias vezes no mesmo quadro
-            if (c.id && c.checkedFrame == currentFrame && bytes > 0x40000)
+            // a cada uso, uma amostra rápida (64 pontos espalhados) pega as texturas que o jogo reescreve inteiras, como
+            // a do texto dos menus, mesmo várias vezes no mesmo quadro; o conteúdo inteiro só é conferido a cada 30
+            // quadros (antes era a cada uso ou quadro: ~2 ms por quadro só de hash)
+            uint64_t sparse = SparseSample(src, bytes);
+            if (c.id && c.sparse == sparse && currentFrame < c.checkedFrame + 30)
                 return c.id;
+            uint64_t sample = c.id && c.sparse == sparse ? Sample(src, bytes) : 0;
+            c.sparse = sparse;
             c.checkedFrame = currentFrame;
-            uint64_t sample = Sample(src, bytes);
-            if (c.id && c.sample == sample)
+            if (c.id && sample && c.sample == sample)
                 return c.id;
+            if (!sample)
+                sample = Sample(src, bytes);
             xenos::DecodeTexture(t, src, scratch);
             if (!c.id)
                 c.id = MakeTexture(t.width, t.height);
@@ -481,8 +581,25 @@ namespace renderer
             }
         }
 
+        // componente c do atributo a do vértice v (diagnósticos)
+        float Attribute(const DrawCall& call, uint32_t a, uint32_t v, uint32_t c)
+        {
+            const VertexStream* s = a < 16 ? call.streams[a] : nullptr;
+            size_t index = size_t(v) * 4 + c;
+            return s && index < s->data.size() ? s->data[index] : 0.0f;
+        }
+
         void ApplyState(const RenderState& s, const Target& t)
         {
+            bool depth = t.depth != 0;
+            if (stateKnown && memcmp(&s, &lastState, sizeof(s)) == 0 && t.width == lastTargetWidth &&
+                t.height == lastTargetHeight && depth == lastTargetDepth)
+                return;
+            stateKnown = true;
+            lastState = s;
+            lastTargetWidth = t.width;
+            lastTargetHeight = t.height;
+            lastTargetDepth = depth;
             const BlendState& blend = s.blend;
             if (blend.enable)
             {
@@ -584,7 +701,7 @@ namespace renderer
             fprintf(stderr, "[gl] não foi possível criar a janela/contexto: %s\n", SDL_GetError());
             std::abort();
         }
-        SDL_GL_SetSwapInterval(1);
+        SDL_GL_SetSwapInterval(getenv("DMC3_NO_VSYNC") ? 0 : 1);   // sem vsync: medições de tempo sem a espera do driver
 #ifndef DMC3_GLES
 #define LOAD(type, name) name = reinterpret_cast<type>(SDL_GL_GetProcAddress(#name));
         GL_FUNCTIONS(LOAD)
@@ -618,6 +735,9 @@ namespace renderer
     void Clear(const Target& target, uint32_t flags, const float color[4], float z, uint32_t stencil)
     {
         EnsureWindow();
+        if (skipFrame)
+            return;
+        MarkDirty();
         Framebuffer(target);
         GLbitfield mask = 0;
         if (flags & 0xF)
@@ -646,21 +766,28 @@ namespace renderer
     void Draw(const DrawCall& call)
     {
         EnsureWindow();
+        if (skipFrame)
+            return;
         if (!call.vs || !call.ps || call.vertexCount == 0)
             return;
         Program& program = GetProgram(call);
         if (!program.ok)
             return;
+        gpu::profile.draws++;
         Framebuffer(call.target);
-        glUseProgram(program.id);
+        if (boundProgram != program.id)
+            glUseProgram(program.id);
+        boundProgram = program.id;
         ApplyState(call.state, call.target);
 
-        if (program.vc >= 0)
-            glUniform4fv(program.vc, 256, call.vsConstants);
-        if (program.pc >= 0)
-            glUniform4fv(program.pc, 256, call.psConstants);
-        if (program.b >= 0)
+        SendConstants(program.vsRanges, program.vsSent, call.vsConstants);
+        SendConstants(program.psRanges, program.psSent, call.psConstants);
+        if (program.b >= 0 && (!program.boolsSent || memcmp(program.sentBools, call.bools, sizeof(call.bools)) != 0))
+        {
             glUniform1uiv(program.b, 8, call.bools);
+            memcpy(program.sentBools, call.bools, sizeof(call.bools));
+            program.boolsSent = true;
+        }
         const BlendState& blend = call.state.blend;
         glUniform1i(program.alphaFunc, blend.alphaTest ? int(blend.alphaFunc) : 7);
         glUniform1f(program.alphaRef, blend.alphaRef);
@@ -677,12 +804,19 @@ namespace renderer
             if (call.ps->textureMask >> i & 1)
             {
                 glActiveTexture(GL_TEXTURE0 + i);
+                uint64_t textureStart = SDL_GetTicksNS();
                 GLuint id = Upload(call.textures[i]);
-                glBindTexture(GL_TEXTURE_2D, id);
+                gpu::profile.textures += SDL_GetTicksNS() - textureStart;
+                if (boundTextures[i] != id)
+                    glBindTexture(GL_TEXTURE_2D, id);
+                boundTextures[i] = id;
                 // só as texturas convertidas da memória têm mipmaps (as resolvidas e a branca, não)
                 auto r = resolved.find(call.textures[i].address);
                 bool hasMips = id != whiteTexture && r == resolved.end();
-                glBindSampler(i, Sampler(call.textures[i], hasMips, r != resolved.end() && r->second.depth));
+                GLuint sampler = Sampler(call.textures[i], hasMips, r != resolved.end() && r->second.depth);
+                if (boundSamplers[i] != sampler)
+                    glBindSampler(i, sampler);
+                boundSamplers[i] = sampler;
                 if (textureDumpFrame && currentFrame + 1 == textureDumpFrame)
                     DumpTexture(call.textures[i], i, call.psKey);
             }
@@ -691,14 +825,13 @@ namespace renderer
         if (DebugFrame())
             fprintf(stderr, "[debug] desenho: prim %u, %u vértices, %zu índices, %zu atributos, RT %08X %ux%u DS %08X, viewport %s "
                 "%.0f,%.0f %.0fx%.0f, blend %d %08X cte (%.2f %.2f %.2f %.2f), z %d/%d, cull %d%d, máscara %X, a0 (%.3f %.3f %.3f %.3f)\n",
-                call.primitive, call.vertexCount, call.indices.size(), call.vs->fetches.size(), call.target.color,
+                call.primitive, call.vertexCount, call.indices ? call.indices->data.size() : size_t(0), call.vs->fetches.size(), call.target.color,
                 call.target.width, call.target.height, call.target.depth, call.state.viewport ? "sim" : "não",
                 call.state.viewportX, call.state.viewportY, call.state.viewportW, call.state.viewportH, call.state.blend.enable,
                 call.state.blend.control, call.state.blend.constant[0], call.state.blend.constant[1],
                 call.state.blend.constant[2], call.state.blend.constant[3], call.state.depthTest, call.state.depthWrite, call.state.cullFront, call.state.cullBack,
-                call.state.colorMask, call.attributes.size() >= 4 ? call.attributes[0] : 0.f,
-                call.attributes.size() >= 4 ? call.attributes[1] : 0.f, call.attributes.size() >= 4 ? call.attributes[2] : 0.f,
-                call.attributes.size() >= 4 ? call.attributes[3] : 0.f);
+                call.state.colorMask, Attribute(call, 0, 0, 0), Attribute(call, 0, 0, 1), Attribute(call, 0, 0, 2),
+                Attribute(call, 0, 0, 3));
         if (DebugFrame() && call.state.stencil.enable)
         {
             const StencilState& st = call.state.stencil;
@@ -716,27 +849,73 @@ namespace renderer
             {
                 std::string line;
                 char buf[64];
-                for (size_t k = 0; k < perVertex; k++)   // um bloco por atributo: (atributo * vértices + vértice) * 4
+                for (size_t k = 0; k < perVertex; k++)
                 {
-                    size_t index = ((k / 4) * call.vertexCount + v) * 4 + k % 4;
-                    if (index >= call.attributes.size())
-                        break;
-                    snprintf(buf, sizeof(buf), "%s%.3f", k % 4 ? " " : k ? " | " : "", call.attributes[index]);
+                    snprintf(buf, sizeof(buf), "%s%.3f", k % 4 ? " " : k ? " | " : "", Attribute(call, uint32_t(k / 4), v, uint32_t(k % 4)));
                     line += buf;
                 }
                 fprintf(stderr, "[debug]   vértice %u: %s\n", v, line.c_str());
             }
         }
 
+        // cada atributo tem o seu buffer, reenviado só quando os vértices mudaram (cache em gpu.cpp)
+        uint64_t submitStart = SDL_GetTicksNS();
+        struct SubmitTimer { uint64_t start; ~SubmitTimer() { gpu::profile.submit += SDL_GetTicksNS() - start; } } submitTimer{ submitStart };
         glBindVertexArray(vao);
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, call.attributes.size() * sizeof(float), call.attributes.data(), GL_STREAM_DRAW);
-        uint32_t count = uint32_t(call.vs->fetches.size());
+        uint32_t count = std::min<uint32_t>(uint32_t(call.vs->fetches.size()), 16);
         for (uint32_t i = 0; i < 16; i++)
         {
-            if (i < count)
+            const VertexStream* stream = i < count ? call.streams[i] : nullptr;
+            if (stream && stream->transient)
             {
-                glVertexAttribPointer(i, 4, GL_FLOAT, GL_FALSE, 16, reinterpret_cast<void*>(size_t(i) * call.vertexCount * 16));
+                // dados de um desenho só: anexados num buffer circular grande (reespecificar o mesmo buffer pequeno a
+                // cada desenho obriga o driver a esperar a GPU)
+                auto& s = const_cast<VertexStream&>(*stream);
+                static GLuint ring = 0;
+                static size_t ringUsed = 0;
+                static uint32_t ringGeneration = 0;   // muda a cada buffer novo: o que estava no anterior precisa ir de novo
+                constexpr size_t RingSize = 4 << 20;
+                size_t bytes = s.data.size() * sizeof(float);
+                if (!ring)
+                {
+                    glGenBuffers(1, &ring);
+                    glBindBuffer(GL_ARRAY_BUFFER, ring);
+                    glBufferData(GL_ARRAY_BUFFER, RingSize, nullptr, GL_STREAM_DRAW);
+                }
+                glBindBuffer(GL_ARRAY_BUFFER, ring);
+                if ((s.ringVersion != s.version || s.ringGeneration != ringGeneration) && bytes <= RingSize)
+                {
+                    if (ringUsed + bytes > RingSize)
+                    {
+                        glBufferData(GL_ARRAY_BUFFER, RingSize, nullptr, GL_STREAM_DRAW);   // buffer novo; o velho fica com a GPU
+                        ringUsed = 0;
+                        ringGeneration++;
+                    }
+                    glBufferSubData(GL_ARRAY_BUFFER, GLintptr(ringUsed), GLsizeiptr(bytes), s.data.data());
+                    s.ringOffset = uint32_t(ringUsed);
+                    ringUsed = (ringUsed + bytes + 255) & ~size_t(255);
+                    s.ringVersion = s.version;
+                    s.ringGeneration = ringGeneration;
+                    gpu::profile.uploads++;
+                    gpu::profile.uploadBytes += bytes;
+                }
+                glVertexAttribPointer(i, 4, GL_FLOAT, GL_FALSE, 16, reinterpret_cast<void*>(size_t(s.ringOffset) + call.streamOffsets[i]));
+                glEnableVertexAttribArray(i);
+            }
+            else if (stream)
+            {
+                auto& s = const_cast<VertexStream&>(*stream);
+                if (!s.glBuffer)
+                    glGenBuffers(1, &s.glBuffer);
+                glBindBuffer(GL_ARRAY_BUFFER, s.glBuffer);
+                if (s.glVersion != s.version)
+                {
+                    glBufferData(GL_ARRAY_BUFFER, s.data.size() * sizeof(float), s.data.data(), GL_DYNAMIC_DRAW);
+                    gpu::profile.uploads++;
+                    gpu::profile.uploadBytes += s.data.size() * sizeof(float);
+                    s.glVersion = s.version;
+                }
+                glVertexAttribPointer(i, 4, GL_FLOAT, GL_FALSE, 16, reinterpret_cast<void*>(size_t(call.streamOffsets[i])));
                 glEnableVertexAttribArray(i);
             }
             else
@@ -756,38 +935,84 @@ namespace renderer
         case 6: mode = GL_TRIANGLE_STRIP; break;
         default: mode = GL_TRIANGLES; break;
         }
-        std::vector<uint32_t> indices;
-        const std::vector<uint32_t>* source = &call.indices;
-        if (call.primitive == 13)
-        {
-            uint32_t n = call.indices.empty() ? call.vertexCount : uint32_t(call.indices.size());
-            auto at = [&](uint32_t i) { return call.indices.empty() ? i : call.indices[i]; };
-            for (uint32_t i = 0; i + 3 < n; i += 4)
-                indices.insert(indices.end(), { at(i), at(i + 1), at(i + 2), at(i), at(i + 2), at(i + 3) });
-            source = &indices;
-        }
-        else if (call.primitive != 1 && call.primitive != 2 && call.primitive != 3 && call.primitive != 4 &&
-            call.primitive != 5 && call.primitive != 6)
+        if (call.primitive != 1 && call.primitive != 2 && call.primitive != 3 && call.primitive != 4 &&
+            call.primitive != 5 && call.primitive != 6 && call.primitive != 13)
         {
             static int warned = 0;
             if (warned++ < 8)
                 fprintf(stderr, "[gl] tipo de primitiva %u ainda não suportado\n", call.primitive);
             return;
         }
-        if (source->empty())
+        if (call.indices)
         {
-            glDrawArrays(mode, 0, call.vertexCount);
+            // índices do jogo, com buffer próprio; quads viram dois triângulos na hora de enviar
+            auto& s = const_cast<IndexStream&>(*call.indices);
+            if (!s.glBuffer)
+                glGenBuffers(1, &s.glBuffer);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, s.glBuffer);
+            if (s.glVersion != s.version || s.glPrimitive != call.primitive)
+            {
+                if (call.primitive == 13)
+                {
+                    static std::vector<uint32_t> quads;
+                    quads.clear();
+                    for (size_t i = 0; i + 3 < s.data.size(); i += 4)
+                        quads.insert(quads.end(), { s.data[i], s.data[i + 1], s.data[i + 2], s.data[i], s.data[i + 2], s.data[i + 3] });
+                    glBufferData(GL_ELEMENT_ARRAY_BUFFER, quads.size() * 4, quads.data(), GL_STATIC_DRAW);
+                    s.glCount = uint32_t(quads.size());
+                }
+                else
+                {
+                    glBufferData(GL_ELEMENT_ARRAY_BUFFER, s.data.size() * 4, s.data.data(), GL_STATIC_DRAW);
+                    s.glCount = uint32_t(s.data.size());
+                }
+                s.glVersion = s.version;
+                s.glPrimitive = call.primitive;
+            }
+            glDrawElements(mode, GLsizei(s.glCount), GL_UNSIGNED_INT, nullptr);
+        }
+        else if (call.primitive == 13)
+        {
+            // quads sem índices (os desenhos 2D): um buffer fixo 0,1,2,0,2,3, 4,5,6,4,6,7... que só cresce
+            static uint32_t quadVertices = 0;
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+            if (call.vertexCount > quadVertices)
+            {
+                quadVertices = std::max<uint32_t>(call.vertexCount, 4096) + 3 & ~3u;
+                std::vector<uint32_t> quads;
+                for (uint32_t i = 0; i < quadVertices; i += 4)
+                    quads.insert(quads.end(), { i, i + 1, i + 2, i, i + 2, i + 3 });
+                glBufferData(GL_ELEMENT_ARRAY_BUFFER, quads.size() * 4, quads.data(), GL_STATIC_DRAW);
+            }
+            glDrawElements(mode, GLsizei(call.vertexCount / 4 * 6), GL_UNSIGNED_INT, nullptr);
         }
         else
         {
-            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, source->size() * 4, source->data(), GL_STREAM_DRAW);
-            glDrawElements(mode, GLsizei(source->size()), GL_UNSIGNED_INT, nullptr);
+            glDrawArrays(mode, 0, call.vertexCount);
         }
+    }
+
+    void Forget(VertexStream& stream)
+    {
+        if (stream.glBuffer)
+            glDeleteBuffers(1, &stream.glBuffer);
+        stream.glBuffer = 0;
+        stream.glVersion = ~0u;
+    }
+
+    void Forget(IndexStream& stream)
+    {
+        if (stream.glBuffer)
+            glDeleteBuffers(1, &stream.glBuffer);
+        stream.glBuffer = 0;
+        stream.glVersion = ~0u;
     }
 
     void Resolve(const Target& target, uint32_t destAddress, uint32_t destWidth, uint32_t destHeight, bool depth)
     {
+        if (skipFrame)
+            return;
+        MarkDirty();
         EnsureWindow();
         if (depth)
         {
@@ -1028,9 +1253,18 @@ namespace renderer
         return DebugFrame();
     }
 
-    void Present(uint64_t frame, uint32_t frontBuffer)
+    // ---- pular quadros ----
+    // O jogo anda por quadro (as cutscenes em tempo real também), mas o áudio anda pelo relógio. Num aparelho que não
+    // sustenta 60 quadros/s, cada quadro atrasado deixa a imagem para trás do som. Quando o jogo atrasa mais de um
+    // quadro, o próximo é processado sem desenhar (Draw, Clear, Resolve e a apresentação não fazem nada): o jogo
+    // recupera o tempo e a sincronia com o áudio se mantém. No máximo um quadro pulado a cada dois.
+    bool SkippingFrame()
     {
-        EnsureWindow();
+        return skipFrame;
+    }
+
+    void PresentImage(uint64_t frame, uint32_t frontBuffer)
+    {
         // a imagem do console tem a linha 0 em cima; a janela do GL, embaixo
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -1180,13 +1414,36 @@ namespace renderer
             }
         }
         SDL_GL_SwapWindow(window);
-        // o jogo conta o tempo em quadros de 60 Hz: com vsync num monitor mais rápido, segura o ritmo aqui
-        static uint64_t deadline = 0;
+    }
+
+    void Present(uint64_t frame, uint32_t frontBuffer)
+    {
+        EnsureWindow();
+        MarkDirty();
+        bool skipped = skipFrame;
+        // DMC3_SLOW_TEST=<ms>: atraso artificial em cada quadro desenhado, para simular um aparelho com GPU ou driver
+        // mais lento (os quadros pulados não têm esse custo, como num aparelho de verdade)
+        static const int slowTest = getenv("DMC3_SLOW_TEST") ? atoi(getenv("DMC3_SLOW_TEST")) : 0;
+        if (skipped)
+        {
+            gpu::profile.skipped++;
+        }
+        else
+        {
+            PresentImage(frame, frontBuffer);
+            if (slowTest > 0)
+                SDL_Delay(Uint32(slowTest));
+        }
+        // o jogo conta o tempo em quadros de 60 Hz: o relógio ideal avança 1/60 s por quadro. Adiantado, espera;
+        // atrasado, guarda o atraso (até 100 ms; mais que isso é carregamento ou pausa, e o relógio recomeça)
+        static uint64_t ideal = 0;
         constexpr uint64_t FrameNs = 1000000000ull / 60;
         uint64_t now = SDL_GetTicksNS();
-        deadline = deadline && now < deadline + FrameNs ? deadline + FrameNs : now;
-        if (now < deadline)
-            SDL_DelayPrecise(deadline - now);
+        ideal = ideal && now < ideal + FrameNs + 100000000ull ? ideal + FrameNs : now;
+        if (now < ideal)
+            SDL_DelayPrecise(ideal - now);
+        bool behind = now > ideal + FrameNs;
+        skipFrame = touch::FrameSkip() && behind && !skipped;
         SDL_Event e;
         while (SDL_PollEvent(&e))
         {

@@ -23,6 +23,8 @@ namespace touch
     int DisplayMode();
     // botões de ação do controle físico pela letra impressa (true) ou pela posição do Xbox (false, o padrão); no menu
     bool PadByLabel();
+    // pular quadros quando o jogo atrasa (renderer_gl.cpp), para a imagem não ficar para trás do áudio; no menu
+    bool FrameSkip();
 
     // triângulos do desenho dos controles em pixels da janela: x, y, r, g, b, a por vértice
     void BuildOverlay(int windowWidth, int windowHeight, std::vector<float>& vertices);

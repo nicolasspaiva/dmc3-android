@@ -30,6 +30,14 @@ namespace gpu
     };
 
     FrameStats& Stats();
+
+    // tempo gasto em cada parte do quadro desde o último relatório (ns), e quadros pulados (renderer, pular quadros)
+    struct Profile
+    {
+        uint64_t prep = 0, gl = 0, present = 0, skipped = 0;
+        uint64_t uploads = 0, uploadBytes = 0, draws = 0, textures = 0, submit = 0;   // envios de vértices e índices ao GL
+    };
+    extern Profile profile;
     void Present();   // fim de quadro (chamado pelo VdSwap)
 
     // tempo que a thread que apresenta os quadros passa bloqueada no kernel (0 leitura, 1 espera, 2 pausa);

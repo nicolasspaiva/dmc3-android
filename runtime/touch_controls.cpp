@@ -92,6 +92,7 @@ namespace
     // controle físico: false = botões pela posição do Xbox (o de baixo é o A), true = pela letra impressa (nos controles
     // da Nintendo o A fica à direita); gravado em controle.txt
     bool padLabels = false;
+    bool frameSkip = true;   // pular quadros quando atrasa (pular_quadros.txt)
     bool autoHidden = false;   // escondidos porque um controle físico está conectado ou foi usado
     bool loaded = false;
     float aspect = 16.0f / 9;   // largura / altura da janela, para medir distâncias em unidades da altura
@@ -112,8 +113,8 @@ namespace
     };
 
     // itens do menu, um por linha
-    enum MenuItem { ItemMode, ItemControls, ItemPad, ItemEdit, ItemReset, ItemClose, ItemCount };
-    constexpr float MenuWidth = 0.72f, RowHeight = 0.12f, RowGap = 0.02f;
+    enum MenuItem { ItemMode, ItemControls, ItemPad, ItemSkip, ItemEdit, ItemReset, ItemClose, ItemCount };
+    constexpr float MenuWidth = 0.72f, RowHeight = 0.10f, RowGap = 0.015f;
 
     Rect MenuRow(int i)
     {
@@ -145,6 +146,7 @@ namespace
         case ItemMode: return std::string("Tela: ") + ModeNames[displayMode];
         case ItemControls: return userHidden ? "Controles na tela: ocultos" : "Controles na tela: visíveis";
         case ItemPad: return padLabels ? "Botões do controle: letras" : "Botões do controle: posição Xbox";
+        case ItemSkip: return frameSkip ? "Pular quadros: automático" : "Pular quadros: desligado";
         case ItemEdit: return "Editar layout dos botões";
         case ItemReset: return "Restaurar layout padrão";
         default: return "Fechar";
@@ -179,6 +181,13 @@ namespace
             fgets(text, sizeof(text), f);
             fclose(f);
             padLabels = strncmp(text, "letras", 6) == 0;
+        }
+        if (FILE* f = fopen(SettingsPath("pular_quadros.txt").c_str(), "r"))
+        {
+            char text[32] = {};
+            fgets(text, sizeof(text), f);
+            fclose(f);
+            frameSkip = strncmp(text, "desligado", 9) != 0;
         }
         if (FILE* f = fopen(SettingsPath("tela.txt").c_str(), "r"))
         {
@@ -318,6 +327,15 @@ namespace
                 fclose(f);
             }
             fprintf(stderr, "[input] botões do controle: %s\n", padLabels ? "pela letra" : "pela posição do Xbox");
+            break;
+        case ItemSkip:
+            frameSkip = !frameSkip;
+            if (FILE* f = fopen(SettingsPath("pular_quadros.txt").c_str(), "w"))
+            {
+                fputs(frameSkip ? "automatico\n" : "desligado\n", f);
+                fclose(f);
+            }
+            fprintf(stderr, "[input] pular quadros: %s\n", frameSkip ? "automático" : "desligado");
             break;
         case ItemEdit:
             menuOpen = false;
@@ -510,6 +528,13 @@ namespace touch
         std::lock_guard guard(lock);
         autoHidden = connected;
         fingers.clear();
+    }
+
+    bool FrameSkip()
+    {
+        std::lock_guard guard(lock);
+        Load();
+        return frameSkip;
     }
 
     bool PadByLabel()
